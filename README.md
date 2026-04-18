@@ -49,3 +49,5 @@ Add to your MCP config (`~/.claude.json` or Claude Desktop settings):
 | `mark_message` | Set/remove flags (read, flagged) |
 | `move_message` | Move message to another folder |
 | `delete_message` | Delete or trash a message |
+| `create_draft` | Create a new draft email |
+| `create_reply_draft` | Create a reply draft on an existing thread (preserves In-Reply-To/References) |

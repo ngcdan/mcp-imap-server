@@ -322,4 +322,141 @@ export function registerTools(server: McpServer): void {
       }
     }
   );
+
+  server.tool(
+    "create_reply_draft",
+    "Create a reply draft on an existing email thread. Finds the message by UID, sets In-Reply-To and References headers to keep it in the same thread.",
+    {
+      folder: z.string().default("INBOX").describe("Folder containing the original message"),
+      uid: z.number().describe("UID of the message to reply to"),
+      body: z.string().describe("Reply body (plain text)"),
+      replyAll: z.boolean().default(true).describe("Reply to all recipients"),
+      cc: z.string().optional().describe("Additional CC recipients"),
+    },
+    async ({ folder, uid, body, replyAll, cc }) => {
+      const client = await getClient();
+      const lock = await client.getMailboxLock(folder);
+      try {
+        const msg = await client.fetchOne(String(uid), {
+          envelope: true,
+          source: true,
+          uid: true,
+        });
+
+        if (!msg || !("source" in msg) || !msg.source) {
+          return { content: [{ type: "text", text: "Message not found." }] };
+        }
+
+        const parsed = await simpleParser(msg.source as Buffer);
+        const messageId = parsed.messageId;
+        const existingRefs = parsed.references;
+        const originalFrom = parsed.from?.text || "";
+        const originalSubject = parsed.subject || "";
+        const originalDate = parsed.date?.toUTCString() || "";
+
+        const from = process.env.IMAP_USER || "";
+        const replySubject = originalSubject.startsWith("Re:") ? originalSubject : `Re: ${originalSubject}`;
+
+        let toAddr = originalFrom;
+        let ccAddr = cc || "";
+        if (replyAll) {
+          const originalTo = parsed.to
+            ? Array.isArray(parsed.to)
+              ? parsed.to.map((t: { text: string }) => t.text).join(", ")
+              : parsed.to.text
+            : "";
+          const originalCc = parsed.cc
+            ? Array.isArray(parsed.cc)
+              ? parsed.cc.map((t: { text: string }) => t.text).join(", ")
+              : parsed.cc.text
+            : "";
+          const others = [originalTo, originalCc]
+            .filter(Boolean)
+            .join(", ")
+            .split(",")
+            .map((e) => e.trim())
+            .filter((e) => e && !e.includes(from));
+          if (others.length > 0) {
+            ccAddr = [ccAddr, ...others].filter(Boolean).join(", ");
+          }
+        }
+
+        const refs = existingRefs
+          ? Array.isArray(existingRefs) ? [...existingRefs, messageId] : [existingRefs, messageId]
+          : [messageId];
+
+        const headers = [
+          `From: ${from}`,
+          `To: ${toAddr}`,
+          ...(ccAddr ? [`Cc: ${ccAddr}`] : []),
+          `Subject: ${replySubject}`,
+          `Date: ${new Date().toUTCString()}`,
+          `In-Reply-To: ${messageId}`,
+          `References: ${refs.filter(Boolean).join(" ")}`,
+          `MIME-Version: 1.0`,
+          `Content-Type: text/plain; charset=utf-8`,
+        ];
+
+        const fullBody = `${body}\n\nOn ${originalDate}, ${originalFrom} wrote:\n> ${(parsed.text || "").split("\n").join("\n> ")}`;
+        const raw = headers.join("\r\n") + "\r\n\r\n" + fullBody;
+
+        const appendResult = await client.append("Drafts", Buffer.from(raw), ["\\Draft", "\\Seen"]);
+        const draftUid = appendResult && typeof appendResult === "object" ? (appendResult as { uid?: number }).uid : undefined;
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Reply draft created. To: ${toAddr}, Subject: ${replySubject}. Draft UID: ${draftUid ?? "unknown"}`,
+            },
+          ],
+        };
+      } finally {
+        lock.release();
+      }
+    }
+  );
+
+  server.tool(
+    "create_draft",
+    "Create a draft email in the Drafts folder",
+    {
+      to: z.string().describe("Recipient email address(es), comma-separated"),
+      subject: z.string().describe("Email subject"),
+      body: z.string().describe("Email body (plain text)"),
+      cc: z.string().optional().describe("CC recipients, comma-separated"),
+      bcc: z.string().optional().describe("BCC recipients, comma-separated"),
+    },
+    async ({ to, subject, body, cc, bcc }) => {
+      const client = await getClient();
+
+      const from = process.env.IMAP_USER || "";
+      const date = new Date().toUTCString();
+
+      const headers = [
+        `From: ${from}`,
+        `To: ${to}`,
+        ...(cc ? [`Cc: ${cc}`] : []),
+        ...(bcc ? [`Bcc: ${bcc}`] : []),
+        `Subject: ${subject}`,
+        `Date: ${date}`,
+        `MIME-Version: 1.0`,
+        `Content-Type: text/plain; charset=utf-8`,
+      ];
+
+      const raw = headers.join("\r\n") + "\r\n\r\n" + body;
+
+      const result = await client.append("Drafts", Buffer.from(raw), ["\\Draft", "\\Seen"]);
+      const uid = result && typeof result === "object" ? (result as { uid?: number }).uid : undefined;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Draft created in Drafts folder. To: ${to}, Subject: ${subject}. UID: ${uid ?? "unknown"}`,
+          },
+        ],
+      };
+    }
+  );
 }

@@ -2,8 +2,45 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { simpleParser } from "mailparser";
 import { getClient } from "./imap-client.js";
+import { buildSignature } from "./signature.js";
+import { listTemplates, renderTemplate } from "./templates.js";
 
 export function registerTools(server: McpServer): void {
+  server.tool(
+    "list_templates",
+    "List all available email templates with their names and descriptions",
+    {},
+    async () => {
+      const tmpls = listTemplates();
+      return {
+        content: [{ type: "text", text: JSON.stringify(tmpls, null, 2) }],
+      };
+    }
+  );
+
+  server.tool(
+    "render_template",
+    "Render an email template with variables. Use list_templates to see available templates. Variables are key-value pairs like recipient, task, details, extra, etc.",
+    {
+      template: z.string().describe("Template name (e.g. vi_done, en_update)"),
+      vars: z
+        .record(z.string())
+        .describe('Template variables, e.g. {"recipient": "anh Hải", "task": "update CRM"}'),
+    },
+    async ({ template, vars }) => {
+      try {
+        const rendered = renderTemplate(template, vars);
+        return {
+          content: [{ type: "text", text: rendered }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: String(err) }],
+        };
+      }
+    }
+  );
+
   server.tool(
     "list_folders",
     "List all IMAP mailbox folders",
@@ -397,7 +434,8 @@ export function registerTools(server: McpServer): void {
           `Content-Type: text/plain; charset=utf-8`,
         ];
 
-        const fullBody = `${body}\n\nOn ${originalDate}, ${originalFrom} wrote:\n> ${(parsed.text || "").split("\n").join("\n> ")}`;
+        const signature = buildSignature();
+        const fullBody = `${body}${signature}\n\nOn ${originalDate}, ${originalFrom} wrote:\n> ${(parsed.text || "").split("\n").join("\n> ")}`;
         const raw = headers.join("\r\n") + "\r\n\r\n" + fullBody;
 
         const appendResult = await client.append("Drafts", Buffer.from(raw), ["\\Draft", "\\Seen"]);
@@ -444,7 +482,8 @@ export function registerTools(server: McpServer): void {
         `Content-Type: text/plain; charset=utf-8`,
       ];
 
-      const raw = headers.join("\r\n") + "\r\n\r\n" + body;
+      const signature = buildSignature();
+      const raw = headers.join("\r\n") + "\r\n\r\n" + body + signature;
 
       const result = await client.append("Drafts", Buffer.from(raw), ["\\Draft", "\\Seen"]);
       const uid = result && typeof result === "object" ? (result as { uid?: number }).uid : undefined;
